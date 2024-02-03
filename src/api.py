@@ -2,12 +2,15 @@ import os
 import random
 import zipfile
 from typing import Any, Dict
+import boto3
 
 import torch
 from diffusers import DiffusionPipeline
 from flask import Flask, Response, jsonify, request, send_file
 from flask_cors import CORS
 
+s3 = boto3.client('s3')
+bucket_name = 'prometheusteamotk'
 
 app = Flask(__name__)
 CORS(app)
@@ -26,8 +29,8 @@ class DiffuserPipeline:
 
         self.presetPrompt = {
             "snow_white": "Snow White",
-            "elsa": "Elsa",
-            "blossom": "ppg, blossom",
+            "elsa": "",
+            "blossom": "ppg, blossom, 1girl",
             "naruto": "Naruto",
             "bam": "twenty-fifth bam, 1boy, red vest, black shirt, long sleeve, scarf",
             "luffy": "wanostyle, monkey d luffy",
@@ -37,17 +40,17 @@ class DiffuserPipeline:
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
         ).to("cuda")
         self.sdxl_pipe.load_lora_weights(
-            "../lora/XL",
+            "../models/lora/XL",
             weight_name="princess_xl_v2.safetensors",
             adapter_name="princess",
         )
         self.sdxl_pipe.load_lora_weights(
-            "../lora/XL",
+            "../models/lora/XL",
             weight_name="ppg_v04.safetensors",
             adapter_name="powerpuff",
         )
         self.sdxl_pipe.load_lora_weights(
-            "../lora/XL",
+            "../models/lora/XL",
             weight_name="narutov3.safetensors",
             adapter_name="naruto",
         )
@@ -56,12 +59,12 @@ class DiffuserPipeline:
             "Lykon/AnyLoRA", torch_dtype=torch.float16
         ).to("cuda")
         self.sd1_5_pipe.load_lora_weights(
-            "../lora/1.5",
+            "../models/lora/1.5",
             weight_name="Twenty Fith Bam.safetensors",
             adapter_name="TOG",
         )
         self.sd1_5_pipe.load_lora_weights(
-            "../lora/1.5",
+            "../models/lora/1.5",
             weight_name="wanostyle_2_offset.safetensors",
             adapter_name="onePiece",
         )
@@ -92,6 +95,7 @@ class DiffuserPipeline:
 
         image_paths = []
         for i in range(len(summary)):
+            print(f"{self.presetPrompt[bot]}, {summary[i]}")
             image = pipe(
                 f"{self.presetPrompt[bot]}, {summary[i]}",
                 num_inference_steps=num_inference_steps,
@@ -100,18 +104,26 @@ class DiffuserPipeline:
                 negative_prompt=negative_prompt,
             ).images[0]
 
-            image_path = f"../output/image_{i}.png"
-            image_paths.append(image_path)
+            image_name = f"{seed}_{i}.png"
+            print(image_name)
+            image_path = "../output/"+image_name
             image.save(image_path)
 
-        zip_path = f"../output/image_{seed}.zip"
+            s3.upload_file(image_path, bucket_name, image_name)
 
-        # Create a zip file
-        with zipfile.ZipFile(zip_path, "w") as zipf:
-            for image in image_paths:
-                zipf.write(image, os.path.basename(image))
+            image_paths.append("https://prometheusteamotk.s3.ap-northeast-2.amazonaws.com/"+image_name)
 
-        return zip_path
+        # zip_path = f"../output/image_{seed}.zip"
+
+        # # Create a zip file
+        # with zipfile.ZipFile(zip_path, "w") as zipf:
+        #     for image in image_paths:
+        #         zipf.write(image, os.path.basename(image))
+
+        # return zip_path
+        response = {}
+        response['urls'] = image_paths
+        return response
 
 
 @app.route("/genimage", methods=["POST"])
@@ -121,9 +133,10 @@ def generate_image():
         response.headers.add("Access-Control-Allow-Origin", "*")
         data = request.get_json()
 
-        zip_path = DiffuserPipeline(data)
-
-        return send_file(zip_path, mimetype="application/zip", as_attachment=True)
+        response = DiffuserPipeline(data)
+        response = jsonify(response)
+        return response
+        # return send_file(zip_path, mimetype="application/zip", as_attachment=True)
 
 
 @app.route("/")
